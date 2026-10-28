@@ -293,15 +293,54 @@ export function getSystemPrompt(_projectRoot: string, options: PromptToolOptions
   return toolDocs ? `${SYSTEM_PROMPT_BASE}\n\n# Available Tools\n\n${toolDocs}` : SYSTEM_PROMPT_BASE;
 }
 
+const BASE64_DATA_URL_PATTERN = /data:([\w.+-]+\/[\w.+-]+)(?:;[^,;]+)*;base64,([A-Za-z0-9+/=\r\n]+)/gi;
+
+function formatCompactByteSize(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes} B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * Compaction only needs the textual conversation. Inlining image/PDF data URLs
+ * would upload the complete base64 payload a second time and can easily blow
+ * past the compact model's context window, so replace each payload with a
+ * short description while keeping the MIME type and approximate size.
+ */
+function replaceBase64DataUrls(value: string): string {
+  return value.replace(BASE64_DATA_URL_PATTERN, (_match: string, mime: string, base64: string) => {
+    const payload = base64.replace(/[\r\n]/g, "").replace(/=+$/, "");
+    const bytes = Math.floor((payload.length * 3) / 4);
+    return `[${mime} data omitted from compaction, ${formatCompactByteSize(bytes)}]`;
+  });
+}
+
+function stripBase64DataUrls(value: unknown): unknown {
+  if (typeof value === "string") {
+    return replaceBase64DataUrls(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => stripBase64DataUrls(item));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, stripBase64DataUrls(item)]));
+  }
+  return value;
+}
+
 export function getCompactPrompt(sessionMessages: SessionMessage[]): string {
   const jsonl = sessionMessages
     .map((message) =>
       JSON.stringify({
         id: message.id,
         role: message.role,
-        content: message.content,
-        contentParams: message.contentParams,
-        messageParams: message.messageParams,
+        content: stripBase64DataUrls(message.content),
+        contentParams: stripBase64DataUrls(message.contentParams),
+        messageParams: stripBase64DataUrls(message.messageParams),
         createTime: message.createTime,
       })
     )

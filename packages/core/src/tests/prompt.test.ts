@@ -7,11 +7,13 @@ import { fileURLToPath } from "url";
 import {
   buildSkillCatalogPrompt,
   buildSkillDocumentsPrompt,
+  getCompactPrompt,
   getPlanModePrompt,
   getRuntimeContext,
   getSystemPrompt,
   getTools,
 } from "../prompt";
+import type { SessionMessage } from "../session";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const tempDirs: string[] = [];
@@ -322,4 +324,59 @@ test("deepseek-flash uses native image tools unless multimodal is disabled", () 
     assert.equal(prompt.includes("## ReadImage"), native);
     assert.equal(prompt.includes("## UnderstandImage"), !native);
   }
+});
+
+function compactMessage(overrides: Partial<SessionMessage>): SessionMessage {
+  return {
+    id: "message-1",
+    sessionId: "session-1",
+    role: "user",
+    content: "",
+    contentParams: null,
+    messageParams: null,
+    compacted: false,
+    visible: true,
+    createTime: "2026-01-01T00:00:00.000Z",
+    updateTime: "2026-01-01T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+test("getCompactPrompt replaces image base64 payloads with a short placeholder", () => {
+  const base64 = "A".repeat(4096);
+  const prompt = getCompactPrompt([
+    compactMessage({
+      content: "The ReadImage tool has loaded `pad.png`.",
+      contentParams: [
+        {
+          type: "image_url",
+          image_url: { url: `data:image/png;base64,${base64}` },
+        },
+      ],
+    }),
+  ]);
+
+  assert.equal(prompt.includes(base64), false);
+  assert.equal(prompt.includes("image/png data omitted from compaction, 3 KB"), true);
+  assert.equal(prompt.includes("The ReadImage tool has loaded `pad.png`."), true);
+});
+
+test("getCompactPrompt replaces inline base64 data URLs in content and tool params", () => {
+  const base64 = "B".repeat(2048);
+  const prompt = getCompactPrompt([
+    compactMessage({
+      role: "tool",
+      content: `before data:application/pdf;base64,${base64} after`,
+      messageParams: {
+        tool_call_id: "call-1",
+        nested: { dataUrl: `data:image/jpeg;base64,${base64}` },
+      },
+    }),
+  ]);
+
+  assert.equal(prompt.includes(base64), false);
+  assert.equal(prompt.includes("application/pdf data omitted from compaction, 2 KB"), true);
+  assert.equal(prompt.includes("image/jpeg data omitted from compaction, 2 KB"), true);
+  assert.equal(prompt.includes("before "), true);
+  assert.equal(prompt.includes(" after"), true);
 });
